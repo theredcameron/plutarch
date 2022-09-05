@@ -6,90 +6,128 @@ import (
 	"io"
 	"strings"
 	"sync"
-	"net/http"
+	"flag"
 	"time"
+	"net/http"
+	"strconv"
+	"hash/fnv"
 	"github.com/go-xmlfmt/xmlfmt"
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing/object"
+	"gitlab.com/435089/go-logger"
 )
 
-func check(e error) {
-	if e != nil {
-		panic(e)
+var logger *golang_logger.Logger
+
+func LogError(e error) {
+	if e != nil && logger != nil{
+		logger.Log(e.Error())
+		panic("Error found when running program. See logs.")
+	}
+}
+
+func PassiveLogError(e error) {
+	if e != nil && logger != nil{
+		logger.Log(e.Error())
 	}
 }
 
 func main() {
-	//Read file for list of web pages to save
-	data, err := os.ReadFile("sites.list")
-	check(err)
+	var err error
+	logger, err = golang_logger.CreateLogger("logs")
+	LogError(err)
 
-	content := string(data)
-	lines := strings.Split(content, "\n")
+	inputInterval := flag.Int("interval", 10, "The time interval in seconds for saving pages")
+	authorEmail := flag.String("author_email", "", "The email address of the author")
+	authorName := flag.String("author_name", "", "The name of the author")
+	flag.Parse()
+	
+	if *inputInterval < 10 {
+		LogError(fmt.Errorf("Cannot use interval that is less than 10 seconds"));
+	}
 
-	r, err := git.PlainOpen("plutarchs-journal")
-	check(err)
+	intervalString := fmt.Sprintf("%vs", *inputInterval)
+	interval, err := time.ParseDuration(intervalString)
+	LogError(err)
 
-	w, err := r.Worktree()
-	check(err)
+	executeTask := func(authorEmail, authorName string) {
+		logger.Log("Starting save sequence")
+		//Read file for list of web pages to save
+		data, err := os.ReadFile("sites.list")
+		LogError(err)
 
-	var wg sync.WaitGroup
+		content := string(data)
+		lines := strings.Split(content, "\n")
 
-	getAndSave := func(index int, lines []string) {
-		currentTime := time.Now().Format("2006-01-02T15:04:05.000000")
+		r, err := git.PlainOpen("plutarchs-journal")
+		LogError(err)
 
-		line := strings.Split(lines[index], ":::")
+		w, err := r.Worktree()
+		LogError(err)
 
-		if len(line) != 2 {
-			panic("URL file formatted incorrectly")
+		var wg sync.WaitGroup
+
+		getAndSave := func(index int, lines []string) {
+			fmt.Println(lines[index])
+			logger.Log(lines[index])
+
+			response, err := http.Get(lines[index])
+			PassiveLogError(err)
+			defer response.Body.Close()
+
+			body, err := io.ReadAll(response.Body)
+			PassiveLogError(err)
+
+			bodyString := string(body)
+
+			prettyBody := lines[index] + "\n\n\n" + xmlfmt.FormatXML(bodyString, "\t", " ")
+
+			hasher := fnv.New64a()
+			hasher.Write([]byte(lines[index]))
+			fileHash := hasher.Sum64()
+			fileName := strconv.FormatUint(fileHash, 10)
+
+			err = os.WriteFile(fmt.Sprint("plutarchs-journal/", fileName), []byte(prettyBody), 0666)
+			PassiveLogError(err)		
+
+			_, err = w.Add(string(fileName))
+			PassiveLogError(err)
+
+			commit, err := w.Commit("Changes to file", &git.CommitOptions{
+				Author: &object.Signature{
+					Name: authorName,
+					Email: authorEmail,
+					When: time.Now(),
+				},
+			})
+			PassiveLogError(err)
+
+			_, err = r.CommitObject(commit)
+			PassiveLogError(err)
+
+			wg.Done()
 		}
 
-		fmt.Printf("[%v] - %v - %v\n", currentTime, line[0], line[1])
+		wg.Add(len(lines))
 
-		response, err := http.Get(line[1])
-		check(err)
-		defer response.Body.Close()
+		for index := 0; index < len(lines); index++ {
+			go getAndSave(index, lines)
+		}
 
-		body, err := io.ReadAll(response.Body)
-		check(err)
+		logger.Log("Waiting for jobs to finish...")
+		wg.Wait()
+		logger.Log("Jobs finished")
 
-		bodyString := string(body)
-
-		prettyBody := xmlfmt.FormatXML(bodyString, "\t", " ")
-
-		err = os.WriteFile(fmt.Sprint("plutarchs-journal/", line[0]), []byte(prettyBody), 0666)
-		check(err)		
-
-		_, err = w.Add(line[0])
-		check(err)
-
-		commit, err := w.Commit("Changes to file", &git.CommitOptions{
-			Author: &object.Signature{
-				Name: "Mark Ehresman",
-				Email: "435089@gmail.com",
-				When: time.Now(),
-			},
-		})
-		check(err)
-
-		_, err = r.CommitObject(commit)
-		check(err)
-
-		wg.Done()
+		logger.Log("Pushing site changes...")
+		err = r.Push(&git.PushOptions{})
+		PassiveLogError(err)
+		logger.Log("Site changes pushed")
+		logger.Log("Finished save sequence")
 	}
 
-	wg.Add(len(lines))
+	executeTask(*authorEmail, *authorName)
 
-	for index := 0; index < len(lines); index++ {
-		go getAndSave(index, lines)
+	for _ = range time.Tick(interval) {
+		executeTask(*authorEmail, *authorName)
 	}
-
-	fmt.Println("Waiting for jobs to finish...")
-	wg.Wait()
-	fmt.Println("Jobs finished")
-
-	fmt.Println("Pushing site changes...")
-	err = r.Push(&git.PushOptions{})
-	check(err)
-	fmt.Println("Site changes pushed")
 }
