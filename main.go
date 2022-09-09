@@ -20,14 +20,22 @@ import (
 var logger *golang_logger.Logger
 
 func LogError(e error) {
-	if e != nil && logger != nil{
+	if logger == nil {
+		panic(e)
+	}
+	
+	if e != nil{
 		logger.Log(e.Error())
 		panic("Error found when running program. See logs.")
 	}
 }
 
 func PassiveLogError(e error) {
-	if e != nil && logger != nil{
+	if logger == nil {
+		panic(e)
+	}
+
+	if e != nil{
 		logger.Log(e.Error())
 	}
 }
@@ -40,6 +48,7 @@ func main() {
 	inputInterval := flag.Int("interval", 10, "The time interval in seconds for saving pages")
 	authorEmail := flag.String("author_email", "", "The email address of the author")
 	authorName := flag.String("author_name", "", "The name of the author")
+	plutarchJournalPath := flag.String("journal_path", "", "The path of the repository that will hold the journal")
 	flag.Parse()
 	
 	if *inputInterval < 10 {
@@ -53,14 +62,23 @@ func main() {
 	executeTask := func(authorEmail, authorName string) {
 		logger.Log("Starting save sequence")
 		//Read file for list of web pages to save
-		data, err := os.ReadFile("sites.list")
+		data, err := os.ReadFile("sites-list")
 		LogError(err)
 
 		content := string(data)
 		lines := strings.Split(content, "\n")
 
-		r, err := git.PlainOpen("plutarchs-journal")
-		LogError(err)
+		var r *git.Repository
+
+		if _, err = os.Stat("./plutarchs-journal/.git"); os.IsNotExist(err) {
+			r, err = git.PlainClone("./plutarchs-journal", false, &git.CloneOptions{
+				URL:	*plutarchJournalPath,
+			})
+			LogError(err)
+		} else {
+			r, err = git.PlainOpen("./plutarchs-journal")
+			LogError(err)
+		}
 
 		w, err := r.Worktree()
 		LogError(err)
@@ -68,11 +86,13 @@ func main() {
 		var wg sync.WaitGroup
 
 		getAndSave := func(index int, lines []string) {
-			fmt.Println(lines[index])
 			logger.Log(lines[index])
 
 			response, err := http.Get(lines[index])
-			PassiveLogError(err)
+			if err != nil {
+				PassiveLogError(err)
+				return
+			}
 			defer response.Body.Close()
 
 			body, err := io.ReadAll(response.Body)
@@ -90,7 +110,7 @@ func main() {
 			err = os.WriteFile(fmt.Sprint("plutarchs-journal/", fileName), []byte(prettyBody), 0666)
 			PassiveLogError(err)		
 
-			_, err = w.Add(string(fileName))
+			_, err = w.Add(".")
 			PassiveLogError(err)
 
 			commit, err := w.Commit("Changes to file", &git.CommitOptions{
