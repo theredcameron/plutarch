@@ -45,17 +45,17 @@ func main() {
 	logger, err = golang_logger.CreateLogger("logs")
 	LogError(err)
 
-	inputInterval := flag.Int("interval", 10, "The time interval in seconds for saving pages")
+	inputInterval := flag.Int("interval", 5, "The time interval in minutes for saving pages")
 	authorEmail := flag.String("author_email", "", "The email address of the author")
 	authorName := flag.String("author_name", "", "The name of the author")
 	plutarchJournalPath := flag.String("journal_path", "", "The path of the repository that will hold the journal")
 	flag.Parse()
 	
-	if *inputInterval < 10 {
-		LogError(fmt.Errorf("Cannot use interval that is less than 10 seconds"));
+	if *inputInterval < 5 {
+		LogError(fmt.Errorf("Cannot use interval that is less than 5 minutes"));
 	}
 
-	intervalString := fmt.Sprintf("%vs", *inputInterval)
+	intervalString := fmt.Sprintf("%vm", *inputInterval)
 	interval, err := time.ParseDuration(intervalString)
 	LogError(err)
 
